@@ -17,9 +17,13 @@ class TestFuzzySearch(unittest.TestCase):
         calculated_res = find_substring(full_string, substring)
         self.assertIsInstance(calculated_res, tuple)
         self.assertEqual(len(calculated_res), 2)
-        self.assertIsInstance(calculated_res[0], int)
-        self.assertIsInstance(calculated_res[1], int)
-        self.assertEqual(calculated_res, true_res)
+        self.assertIsInstance(calculated_res[0], tuple)
+        self.assertIsInstance(calculated_res[1], float)
+        self.assertEqual(len(calculated_res[0]), 2)
+        self.assertIsInstance(calculated_res[0][0], int)
+        self.assertIsInstance(calculated_res[0][1], int)
+        self.assertEqual(calculated_res[0], true_res)
+        self.assertAlmostEqual(calculated_res[1], 0.0)
 
     def test_find_substring_02(self):
         full_string = 'Мама мыла раму.'
@@ -28,9 +32,13 @@ class TestFuzzySearch(unittest.TestCase):
         calculated_res = find_substring(full_string, substring)
         self.assertIsInstance(calculated_res, tuple)
         self.assertEqual(len(calculated_res), 2)
-        self.assertIsInstance(calculated_res[0], int)
-        self.assertIsInstance(calculated_res[1], int)
-        self.assertEqual(calculated_res, true_res)
+        self.assertIsInstance(calculated_res[0], tuple)
+        self.assertIsInstance(calculated_res[1], float)
+        self.assertEqual(len(calculated_res[0]), 2)
+        self.assertIsInstance(calculated_res[0][0], int)
+        self.assertIsInstance(calculated_res[0][1], int)
+        self.assertEqual(calculated_res[0], true_res)
+        self.assertGreater(calculated_res[1], 0.0)
 
     def test_find_substring_03(self):
         full_string = 'Мама мыла раму.'
@@ -39,9 +47,13 @@ class TestFuzzySearch(unittest.TestCase):
         calculated_res = find_substring(full_string, substring)
         self.assertIsInstance(calculated_res, tuple)
         self.assertEqual(len(calculated_res), 2)
-        self.assertIsInstance(calculated_res[0], int)
-        self.assertIsInstance(calculated_res[1], int)
-        self.assertEqual(calculated_res, true_res)
+        self.assertIsInstance(calculated_res[0], tuple)
+        self.assertIsInstance(calculated_res[1], float)
+        self.assertEqual(len(calculated_res[0]), 2)
+        self.assertIsInstance(calculated_res[0][0], int)
+        self.assertIsInstance(calculated_res[0][1], int)
+        self.assertEqual(calculated_res[0], true_res)
+        self.assertGreater(calculated_res[1], 0.0)
 
     def test_find_substring_04(self):
         full_string = 'Мама мыла раму.'
@@ -50,9 +62,13 @@ class TestFuzzySearch(unittest.TestCase):
         calculated_res = find_substring(full_string, substring)
         self.assertIsInstance(calculated_res, tuple)
         self.assertEqual(len(calculated_res), 2)
-        self.assertIsInstance(calculated_res[0], int)
-        self.assertIsInstance(calculated_res[1], int)
-        self.assertEqual(calculated_res, true_res)
+        self.assertIsInstance(calculated_res[0], tuple)
+        self.assertIsInstance(calculated_res[1], float)
+        self.assertEqual(len(calculated_res[0]), 2)
+        self.assertIsInstance(calculated_res[0][0], int)
+        self.assertIsInstance(calculated_res[0][1], int)
+        self.assertEqual(calculated_res[0], true_res)
+        self.assertGreater(calculated_res[1], 0.0)
 
     def test_find_substring_05(self):
         full_string = 'Мама мыла раму.'

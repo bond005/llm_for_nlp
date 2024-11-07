@@ -1,3 +1,4 @@
+import copy
 import gc
 from typing import List
 import warnings
@@ -7,8 +8,10 @@ from transformers import PreTrainedTokenizer, GenerationMixin, GenerationConfig
 
 
 def generate_answer(questions: List[str], tokenizer: PreTrainedTokenizer, config: GenerationConfig,
-                    model: GenerationMixin, device: str) -> List[str]:
+                    model: GenerationMixin, max_new_tokens: int, device: str) -> List[str]:
     nonempty_questions = []
+    new_config = copy.copy(config)
+    new_config.max_new_tokens = max_new_tokens
     for cur in questions:
         if len(cur.strip()) > 0:
             nonempty_questions.append(cur)
@@ -17,12 +20,7 @@ def generate_answer(questions: List[str], tokenizer: PreTrainedTokenizer, config
     if tokenizer.padding_side != 'left':
         tokenizer.padding_side = 'left'
     x = tokenizer(nonempty_questions, return_tensors='pt', padding=True).to(device)
-    try:
-        with torch.backends.cuda.sdp_kernel(enable_flash=True, enable_math=False, enable_mem_efficient=False):
-            out = model.generate(**x, generation_config=config)
-    except:
-        warnings.warn('The PyTorch scaled dot product attention is not supported.')
-        out = model.generate(**x, generation_config=config)
+    out = model.generate(**x, generation_config=new_config)
     out = [
         output_ids[len(input_ids):]
         for input_ids, output_ids in zip(x.input_ids, out)

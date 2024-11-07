@@ -42,7 +42,7 @@ def levenshtein(seq1: str, seq2: str) -> int:
     return int(matrix[size_x - 1, size_y - 1])
 
 
-def find_substring(full_string: str, substring: str) -> Union[Tuple[int, int], None]:
+def find_substring(full_string: str, substring: str) -> Union[Tuple[Tuple[int, int], float], None]:
     tokens_of_full_string = tokenize_text(full_string)
     tokens_of_substring = tokenize_text(substring)
     full_string_len = len(tokens_of_full_string)
@@ -52,7 +52,11 @@ def find_substring(full_string: str, substring: str) -> Union[Tuple[int, int], N
     if substring_len > full_string_len:
         return None
     if substring_len == full_string_len:
-        return tokens_of_full_string[0][0], tokens_of_full_string[-1][1]
+        best_dist = levenshtein(
+            ''.join([it1[2] for it1 in tokens_of_substring]),
+            ''.join([it2[2] for it2 in tokens_of_full_string])
+        )
+        return (tokens_of_full_string[0][0], tokens_of_full_string[-1][1]), best_dist / substring_len
     best_res = (tokens_of_full_string[0][0], tokens_of_full_string[substring_len - 1][1])
     best_dist = levenshtein(
         ''.join([it1[2] for it1 in tokens_of_substring]),
@@ -66,4 +70,4 @@ def find_substring(full_string: str, substring: str) -> Union[Tuple[int, int], N
         if cur_dist < best_dist:
             best_dist = cur_dist
             best_res = (tokens_of_full_string[idx][0], tokens_of_full_string[idx + substring_len - 1][1])
-    return best_res
+    return best_res, best_dist / substring_len
