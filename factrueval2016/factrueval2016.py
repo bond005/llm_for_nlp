@@ -2,7 +2,6 @@ import copy
 import math
 from typing import List, Tuple
 
-from razdel import tokenize
 from transformers import PreTrainedTokenizer, GenerationMixin, GenerationConfig
 
 from segmentation.segmentation import segment_long_text

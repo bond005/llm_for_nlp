@@ -29,7 +29,7 @@ def main():
 
     parser = ArgumentParser()
     parser.add_argument('-m', '--model', dest='model_name', type=str, required=True,
-                        help='The input name of FRED-T5.')
+                        help='The input name of tested LLM.')
     parser.add_argument('-o', '--output', dest='output_submission_dir', type=str, required=True,
                         help='The output directory for the submission.')
     parser.add_argument('-i', '--input', dest='input_data_name', type=str, required=True,

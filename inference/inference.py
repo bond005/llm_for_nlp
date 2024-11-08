@@ -1,7 +1,6 @@
 import copy
 import gc
 from typing import List
-import warnings
 
 import torch
 from transformers import PreTrainedTokenizer, GenerationMixin, GenerationConfig

@@ -1,4 +1,4 @@
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 
 def prepare_prompt_for_ner(entity_class: str, input_text: str) -> List[Dict[str, str]]:
@@ -17,8 +17,12 @@ def prepare_prompt_for_summarization(input_text: str) -> List[Dict[str, str]]:
     return [{'role': 'system', 'content': system_prompt}, {'role': 'user', 'content': user_prompt}]
 
 
-def prepare_prompt_for_asr_correction(input_text: str) -> List[Dict[str, str]]:
+def prepare_prompt_for_asr_correction(input_text: str,
+                                      additional_prompt: Optional[str] = None) -> List[Dict[str, str]]:
     system_prompt = 'Исправь, пожалуйста, ошибки распознавания речи в следующем тексте.'
+    if additional_prompt is not None:
+        system_prompt += (' ' + ' '.join(additional_prompt.strip().split()))
+    system_prompt = system_prompt.strip()
     user_prompt = input_text.strip()
     return [{'role': 'system', 'content': system_prompt}, {'role': 'user', 'content': user_prompt}]
 
