@@ -1,5 +1,6 @@
 import codecs
 import csv
+import random
 from typing import Dict, List, Optional
 
 
@@ -21,7 +22,7 @@ def prepare_prompt_for_summarization(input_text: str) -> List[Dict[str, str]]:
 
 def prepare_prompt_for_asr_correction(input_text: str,
                                       additional_prompt: Optional[str] = None,
-                                      few_shots: Optional[List[Dict[str, str]]] = None) -> List[Dict[str, str]]:
+                                      few_shots: Optional[List[List[Dict[str, str]]]] = None) -> List[Dict[str, str]]:
     system_prompt = 'Исправь, пожалуйста, ошибки распознавания речи в следующем тексте.'
     if additional_prompt is not None:
         system_prompt += (' ' + ' '.join(additional_prompt.strip().split()))
@@ -30,7 +31,8 @@ def prepare_prompt_for_asr_correction(input_text: str,
     res = [{'role': 'system', 'content': system_prompt}]
     if few_shots is not None:
         if len(few_shots) > 0:
-            res += few_shots
+            for val in few_shots:
+                res += val
     res.append({'role': 'user', 'content': user_prompt})
     return res
 
