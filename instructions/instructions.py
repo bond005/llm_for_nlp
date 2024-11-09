@@ -1,3 +1,5 @@
+import codecs
+import csv
 from typing import Dict, List, Optional
 
 
@@ -18,13 +20,19 @@ def prepare_prompt_for_summarization(input_text: str) -> List[Dict[str, str]]:
 
 
 def prepare_prompt_for_asr_correction(input_text: str,
-                                      additional_prompt: Optional[str] = None) -> List[Dict[str, str]]:
+                                      additional_prompt: Optional[str] = None,
+                                      few_shots: Optional[List[Dict[str, str]]] = None) -> List[Dict[str, str]]:
     system_prompt = 'Исправь, пожалуйста, ошибки распознавания речи в следующем тексте.'
     if additional_prompt is not None:
         system_prompt += (' ' + ' '.join(additional_prompt.strip().split()))
     system_prompt = system_prompt.strip()
     user_prompt = input_text.strip()
-    return [{'role': 'system', 'content': system_prompt}, {'role': 'user', 'content': user_prompt}]
+    res = [{'role': 'system', 'content': system_prompt}]
+    if few_shots is not None:
+        if len(few_shots) > 0:
+            res += few_shots
+    res.append({'role': 'user', 'content': user_prompt})
+    return res
 
 
 def prepare_prompt_for_toxicity_detection(input_text: str) -> List[Dict[str, str]]:
@@ -39,3 +47,22 @@ def prepare_prompt_for_detoxification(input_text: str) -> List[Dict[str, str]]:
                      '(неприятным для какой-то группы людей, нарушающим принципы этики).')
     user_prompt = input_text.strip()
     return [{'role': 'system', 'content': system_prompt}, {'role': 'user', 'content': user_prompt}]
+
+
+def load_fewshot(csv_fname: str) -> List[List[Dict[str, str]]]:
+    with codecs.open(csv_fname, mode='r', encoding='utf-8') as fp:
+        data_reader = csv.reader(fp)
+        rows = list(filter(lambda it: len(it) > 0, data_reader))
+    if len(rows) == 0:
+        raise IOError(f'The "{csv_fname}" is empty.')
+    true_header = ['QUERY', 'REFERENCE']
+    if rows[0] != true_header:
+        raise IOError(f'The "{csv_fname}" is empty. The expected header is {true_header}, the got one is {rows[0]}.')
+    samples = []
+    for it in rows[1:]:
+        new_sample = [{'role': 'user', 'content': it[0]}, {'role': 'assistant', 'content': it[1]}]
+        samples.append(new_sample)
+        del new_sample
+    if len(samples) == 0:
+        raise IOError(f'The "{csv_fname}" is empty.')
+    return samples

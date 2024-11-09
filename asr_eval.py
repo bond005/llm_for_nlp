@@ -17,7 +17,7 @@ from tqdm import tqdm
 from transformers import pipeline
 from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
 
-from instructions.instructions import prepare_prompt_for_asr_correction
+from instructions.instructions import prepare_prompt_for_asr_correction, load_fewshot
 from inference.inference import generate_answer
 from fuzzy_search.fuzzy_search import levenshtein
 
@@ -31,7 +31,7 @@ def calculate_cer(predicted: str, reference: str) -> float:
         if len(predicted.strip()) == 0:
             cer = 0.0
         else:
-            cer = 1.0
+            cer = float(len(reference))
     else:
         dist = levenshtein(predicted, reference)
         cer = dist / float(len(reference))
@@ -71,6 +71,8 @@ def main():
                         default=20, help='The hidden layer of the BERT-like encoder for BERT score calculation.')
     parser.add_argument('--prompt', dest='additional_prompt', type=str, required=False, default=None,
                         help='Additional prompt for ASR correction with LLM.')
+    parser.add_argument('--fewshot', dest='fewshot', type=str, required=False, default=None,
+                        help='Additional CSV file with samples for few-shot prompting.')
     args = parser.parse_args()
 
     report_fname: str = os.path.normpath(args.output_report)
@@ -81,6 +83,17 @@ def main():
                 err_msg = f'The directory {basedir} does not exist!'
                 asr_logger.error(err_msg)
                 raise IOError(err_msg)
+
+    if args.fewshot is None:
+        fewshot_samples = None
+    else:
+        fewshot_fname = os.path.normpath(args.fewshot)
+        if not os.path.isfile(fewshot_fname):
+            err_msg = f'The file {fewshot_fname} does not exist!'
+            asr_logger.error(err_msg)
+            raise IOError(err_msg)
+        fewshot_samples = load_fewshot(fewshot_fname)
+        asr_logger.info(f'There are {len(fewshot_samples)} few-shot samples in the "{fewshot_fname}".')
 
     device = 'cuda:0'
     try:
@@ -168,7 +181,11 @@ def main():
             corrected_results.append('')
         else:
             question = tokenizer.apply_chat_template(
-                prepare_prompt_for_asr_correction(cur, additional_prompt=args.additional_prompt),
+                prepare_prompt_for_asr_correction(
+                    input_text=cur,
+                    additional_prompt=args.additional_prompt,
+                    few_shots=fewshot_samples
+                ),
                 tokenize=False, add_generation_prompt=True
             )
             cur_text_len = len(tokenizer.tokenize(cur))
