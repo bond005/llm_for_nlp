@@ -23,7 +23,7 @@ def prepare_prompt_for_summarization(input_text: str) -> List[Dict[str, str]]:
 def prepare_prompt_for_asr_correction(input_text: str,
                                       additional_prompt: Optional[str] = None,
                                       few_shots: Optional[List[List[Dict[str, str]]]] = None) -> List[Dict[str, str]]:
-    system_prompt = 'Исправь, пожалуйста, ошибки распознавания речи в следующем тексте.'
+    system_prompt = '"Исправь ошибки распознавания речи в тексте, а также восстанови пунктуацию и капитализацию.'
     if additional_prompt is not None:
         system_prompt += (' ' + ' '.join(additional_prompt.strip().split()))
     system_prompt = system_prompt.strip()
