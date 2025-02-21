@@ -8,7 +8,8 @@ import sys
 from typing import Dict, List, Set, Tuple, Union
 
 import numpy as np
-from transformers import AutoTokenizer, PreTrainedTokenizer, AutoModelForCausalLM, GenerationConfig
+from transformers import AutoTokenizer, PreTrainedTokenizer, GenerationConfig
+from vllm import LLM, SamplingParams
 import torch
 from tqdm import tqdm
 
@@ -128,13 +129,22 @@ def main():
                         help='The input JSONL file name with instructions.')
     parser.add_argument('-o', '--output', dest='output_file', type=str, required=True,
                         help='The output JSONL file name.')
-    parser.add_argument('-r', '--repeats', dest='repeats_number', type=int, required=False, default=1,
-                        help='Repeats of each instruction.')
     parser.add_argument('-t', '--temperature', dest='temperature', type=float, required=False,
                         default=None, help='Temperature of generation.')
     parser.add_argument('--maxlen', dest='maxlen', type=int, required=False,
                         default=None, help='The maximal length of generated answer.')
+    parser.add_argument('--minibatch', dest='minibatch', type=int, required=False,
+                        default=None, help='The mini-batch size.')
     args = parser.parse_args()
+
+    if args.minibatch is None:
+        minibatch_size = 1
+    else:
+        minibatch_size = args.minibatch
+        if minibatch_size < 1:
+            err_msg = f'The mini-batch is too small! Expected a positive integer, got {args.minibatch}.'
+            text_generation_logger.error(err_msg)
+            raise ValueError(err_msg)
 
     output_fname = os.path.normpath(args.output_file)
     if os.path.isdir(output_fname):
@@ -170,23 +180,10 @@ def main():
     if args.temperature is not None:
         generation.temperature = args.temperature
     try:
-        model = AutoModelForCausalLM.from_pretrained(
-            args.llm_name,
-            torch_dtype=torch.bfloat16,
-            attn_implementation='flash_attention_2',
-            device_map='cuda:0'
-        )
-    except:
-        text_generation_logger.warning('The Flash Attention 2 is not used.')
-        try:
-            model = AutoModelForCausalLM.from_pretrained(
-                args.llm_name,
-                torch_dtype=torch.bfloat16,
-                device_map='cuda:0'
-            )
-        except Exception as err:
-            text_generation_logger.error(str(err))
-            raise
+        model = LLM(model=args.llm_name)
+    except Exception as err:
+        text_generation_logger.error(str(err))
+        raise
     text_generation_logger.info(f'The LLM is loaded from "{args.llm_name}".')
 
     max_length = 0 if (generation.max_new_tokens is None) else generation.max_new_tokens
@@ -212,38 +209,55 @@ def main():
             max_length = args.maxlen
     text_generation_logger.info(f'Maximal number of new tokens is {max_length}.')
     generation.max_new_tokens = max_length
+    sampling_params = SamplingParams(
+        temperature=generation.temperature,
+        top_p=generation.top_p,
+        repetition_penalty=generation.repetition_penalty,
+        max_tokens=generation.max_new_tokens
+    )
 
     n_success = 0
+    batch_of_texts = []
     with codecs.open(output_fname, mode='w', encoding='utf-8', errors='ignore', buffering=0) as fp:
         for cur_instruction in tqdm(input_instructions):
-            x = tokenizer(
-                [instruction_to_text(cur_instruction, tokenizer)],
-                return_tensors='pt',
-                padding=True
-            ).to(model.device)
-            set_of_answers = set()
-            for _ in range(args.repeats_number):
-                out = model.generate(**x, generation_config=generation)
-                out = [
-                    output_ids[len(input_ids):]
-                    for input_ids, output_ids in zip(x.input_ids, out)
-                ]
-                answer = tokenizer.decode(out[0], skip_special_tokens=True).strip()
-                del out
-                if (len(answer) > 0) and is_correct(answer):
-                    if ' '.join(answer.split()).strip().lower() not in set_of_answers:
+            batch_of_texts.append({
+                'system': cur_instruction['system'],
+                'query': cur_instruction['query'],
+                'history': cur_instruction['history'],
+                'input': instruction_to_text(cur_instruction, tokenizer)
+            })
+            if len(batch_of_texts) >= minibatch_size:
+                outputs = model.generate([it['input'] for it in batch_of_texts], sampling_params)
+                for idx, val in enumerate(outputs):
+                    answer = val.outputs[0].text.strip()
+                    if (len(answer) > 0) and is_correct(answer):
                         new_sample = {
-                            'system': cur_instruction['system'],
-                            'query': cur_instruction['query'],
+                            'system': batch_of_texts[idx]['system'],
+                            'query': batch_of_texts[idx]['query'],
                             'response': answer,
-                            'history': cur_instruction['history']
+                            'history': batch_of_texts[idx]['history']
                         }
                         fp.write(json.dumps(new_sample, ensure_ascii=False) + '\n')
                         del new_sample
                         n_success += 1
-                        set_of_answers.add(' '.join(answer.split()).strip().lower())
-            del x, set_of_answers
-    info_msg = f'{n_success} answers from {len(input_instructions) * args.repeats_number} are successfully generated.'
+                del outputs
+                del batch_of_texts
+                batch_of_texts = []
+    if len(batch_of_texts) > 0:
+        outputs = model.generate([it['input'] for it in batch_of_texts], sampling_params)
+        for idx, val in enumerate(outputs):
+            answer = val.outputs[0].text.strip()
+            if (len(answer) > 0) and is_correct(answer):
+                new_sample = {
+                    'system': batch_of_texts[idx]['system'],
+                    'query': batch_of_texts[idx]['query'],
+                    'response': answer,
+                    'history': batch_of_texts[idx]['history']
+                }
+                fp.write(json.dumps(new_sample, ensure_ascii=False) + '\n')
+                del new_sample
+                n_success += 1
+    info_msg = f'{n_success} answers from {len(input_instructions)} are successfully generated.'
     text_generation_logger.info(info_msg)
 
 
