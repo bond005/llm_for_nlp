@@ -29,7 +29,7 @@ PUNCTUATION: Set[str] = {'.', ',', '"', '\'', ':', ';', '-', '+', '=', '*', '\\'
                          '‰', '‱', '—', '∙', '◦', '⁍', '⁌', '⁃', '‣', '•', '−', '‐', '—', '–', '−', '‐',
                          '«', '»', '§', '_', chr(0x305), chr(0x304), chr(0x302), chr(0x301), chr(0x300), '←', '→',
                          '↑', '↓', '⇈', '↮', '↚', '↛', '↔', '⇒', '⇐', '⇔', '↦', '⇸', '↠', '⇾', '⤀', '↣', '↪',
-                         '⤔', '⤖', '⤗', '⇋', '◌⃗', '◌⃑', '↯', '×', '°', '³', '²', chr(0x00B1)}
+                         '⤔', '⤖', '⤗', '⇋', '◌⃗', '◌⃑', '↯', '×', '°', '³', '²', chr(0x00B1), '©'}
 SPACES: Set[str] = {' ', '\n', '\r', '\t', chr(160), chr(8199), chr(8239), chr(8288)}
 RANDOM_SEED: int = 42
 
@@ -131,8 +131,10 @@ def main():
                         help='The output JSONL file name.')
     parser.add_argument('-t', '--temperature', dest='temperature', type=float, required=False,
                         default=None, help='Temperature of generation.')
-    parser.add_argument('--maxlen', dest='maxlen', type=int, required=False,
-                        default=None, help='The maximal length of generated answer.')
+    parser.add_argument('--max_in_len', dest='max_input_len', type=int, required=True,
+                        help='The maximal length of input query.')
+    parser.add_argument('--max_out_len', dest='max_output_len', type=int, required=True,
+                        help='The maximal length of generated answer.')
     parser.add_argument('--minibatch', dest='minibatch', type=int, required=False,
                         default=None, help='The mini-batch size.')
     args = parser.parse_args()
@@ -179,36 +181,8 @@ def main():
         generation.do_sample = True
     if args.temperature is not None:
         generation.temperature = args.temperature
-    try:
-        model = LLM(model=args.llm_name)
-    except Exception as err:
-        text_generation_logger.error(str(err))
-        raise
-    text_generation_logger.info(f'The LLM is loaded from "{args.llm_name}".')
 
-    max_length = 0 if (generation.max_new_tokens is None) else generation.max_new_tokens
-    for cur_instruction in input_instructions:
-        if 'history' in cur_instruction:
-            if len(cur_instruction['history']) > 0:
-                for question, answer in cur_instruction['history']:
-                    n_tokens = max(
-                        len(tokenizer.tokenize(question, add_special_tokens=True)),
-                        len(tokenizer.tokenize(answer, add_special_tokens=True))
-                    )
-                    if n_tokens > max_length:
-                        max_length = n_tokens
-        n_tokens = max(
-            len(tokenizer.tokenize(cur_instruction['system'], add_special_tokens=True)),
-            len(tokenizer.tokenize(cur_instruction['query'], add_special_tokens=True))
-        )
-        if n_tokens > max_length:
-            max_length = n_tokens
-    max_length = max(20, round(1.5 * max_length))
-    if args.maxlen is not None:
-        if args.maxlen > max_length:
-            max_length = args.maxlen
-    text_generation_logger.info(f'Maximal number of new tokens is {max_length}.')
-    generation.max_new_tokens = max_length
+    generation.max_new_tokens = args.max_output_len
     sampling_params = SamplingParams(
         temperature=generation.temperature,
         top_p=generation.top_p,
@@ -216,18 +190,29 @@ def main():
         max_tokens=generation.max_new_tokens
     )
 
+    max_model_len = args.max_output_len + args.max_input_len
+    try:
+        model = LLM(model=args.llm_name, gpu_memory_utilization=0.95, max_model_len=max_model_len)
+    except Exception as err:
+        text_generation_logger.error(str(err))
+        raise
+    text_generation_logger.info(f'The LLM is loaded from "{args.llm_name}".')
+
     n_success = 0
     batch_of_texts = []
     with codecs.open(output_fname, mode='w', encoding='utf-8', errors='ignore', buffering=0) as fp:
         for cur_instruction in tqdm(input_instructions):
+            textualized_instruction = instruction_to_text(cur_instruction, tokenizer)
+            if len(tokenizer.tokenize(textualized_instruction, add_special_tokens=True)) > args.max_input_len:
+                continue
             batch_of_texts.append({
                 'system': cur_instruction['system'],
                 'query': cur_instruction['query'],
                 'history': cur_instruction['history'],
-                'input': instruction_to_text(cur_instruction, tokenizer)
+                'input': textualized_instruction
             })
             if len(batch_of_texts) >= minibatch_size:
-                outputs = model.generate([it['input'] for it in batch_of_texts], sampling_params)
+                outputs = model.generate([it['input'] for it in batch_of_texts], sampling_params, use_tqdm=False)
                 for idx, val in enumerate(outputs):
                     answer = val.outputs[0].text.strip()
                     if (len(answer) > 0) and is_correct(answer):
