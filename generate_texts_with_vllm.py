@@ -4,12 +4,14 @@ import json
 import logging
 import os
 import random
+import signal
 import sys
 from typing import Dict, List, Set, Tuple, Union
 
 import numpy as np
 from transformers import AutoTokenizer, PreTrainedTokenizer, GenerationConfig
 from vllm import LLM, SamplingParams
+from vllm import EngineArgs, LLMEngine
 import torch
 from tqdm import tqdm
 
@@ -30,9 +32,18 @@ PUNCTUATION: Set[str] = {'.', ',', '"', '\'', ':', ';', '-', '+', '=', '*', '\\'
                          '«', '»', '§', '_', chr(0x305), chr(0x304), chr(0x302), chr(0x301), chr(0x300), '←', '→',
                          '↑', '↓', '⇈', '↮', '↚', '↛', '↔', '⇒', '⇐', '⇔', '↦', '⇸', '↠', '⇾', '⤀', '↣', '↪',
                          '⤔', '⤖', '⤗', '⇋', '◌⃗', '◌⃑', '↯', '×', '°', '³', '²', chr(0x00B1), '©',
-                         '₽', '“', '„', 'ν', 'і', 'η', 'λ', 'ο', 'σ', 'χ', '’', '∧'}
+                         '₽', '“', '„', 'ν', 'і', 'η', 'λ', 'ο', 'σ', 'χ', '’', '∧', '、', '。', '一', '“', '”'}
 SPACES: Set[str] = {' ', '\n', '\r', '\t', chr(160), chr(8199), chr(8239), chr(8288)}
 RANDOM_SEED: int = 42
+
+
+def handle_exit(signal, frame):
+    if torch.distributed.is_initialized():
+        if hasattr(LLMEngine, 'shutdown'):
+            LLMEngine.shutdown()
+        torch.distributed.destroy_process_group()
+        torch.cuda_empty_cache()
+    sys.exit(0)
 
 
 def load_data(fname: str) -> List[Dict[str, Union[str, List[Tuple[str, str]]]]]:
@@ -123,6 +134,9 @@ def main():
         raise ValueError(err_msg)
     torch.cuda.manual_seed(RANDOM_SEED)
 
+    signal.signal(signal.SIGINT, handle_exit)
+    signal.signal(signal.SIGTERM, handle_exit)
+
     parser = ArgumentParser()
     parser.add_argument('-m', '--model', dest='llm_name', type=str, required=True,
                         help='The input name of tested LLM')
@@ -196,15 +210,23 @@ def main():
         model = LLM(model=args.llm_name, gpu_memory_utilization=0.95, max_model_len=max_model_len)
     except Exception as err:
         text_generation_logger.error(str(err))
+        if torch.distributed.is_initialized():
+            if hasattr(LLMEngine, 'shutdown'):
+                LLMEngine.shutdown()
+            torch.distributed.destroy_process_group()
+            torch.cuda.empty_cache()
         raise
     text_generation_logger.info(f'The LLM is loaded from "{args.llm_name}".')
 
     n_success = 0
     batch_of_texts = []
+    input_lengths = []
     with codecs.open(output_fname, mode='w', encoding='utf-8', errors='ignore', buffering=0) as fp:
         for cur_instruction in tqdm(input_instructions):
             textualized_instruction = instruction_to_text(cur_instruction, tokenizer)
-            if len(tokenizer.tokenize(textualized_instruction, add_special_tokens=True)) > args.max_input_len:
+            n_tokens = len(tokenizer.tokenize(textualized_instruction, add_special_tokens=True))
+            input_lengths.append(n_tokens)
+            if n_tokens > args.max_input_len:
                 continue
             batch_of_texts.append({
                 'system': cur_instruction['system'],
@@ -213,7 +235,16 @@ def main():
                 'input': textualized_instruction
             })
             if len(batch_of_texts) >= minibatch_size:
-                outputs = model.generate([it['input'] for it in batch_of_texts], sampling_params, use_tqdm=False)
+                try:
+                    outputs = model.generate([it['input'] for it in batch_of_texts], sampling_params, use_tqdm=False)
+                except BaseException as err:
+                    text_generation_logger.error(str(err))
+                    if torch.distributed.is_initialized():
+                        if hasattr(LLMEngine, 'shutdown'):
+                            LLMEngine.shutdown()
+                        torch.distributed.destroy_process_group()
+                        torch.cuda.empty_cache()
+                    raise
                 for idx, val in enumerate(outputs):
                     answer = val.outputs[0].text.strip()
                     if (len(answer) > 0) and is_correct(answer):
@@ -230,7 +261,16 @@ def main():
                 del batch_of_texts
                 batch_of_texts = []
     if len(batch_of_texts) > 0:
-        outputs = model.generate([it['input'] for it in batch_of_texts], sampling_params)
+        try:
+            outputs = model.generate([it['input'] for it in batch_of_texts], sampling_params)
+        except BaseException as err:
+            text_generation_logger.error(str(err))
+            if torch.distributed.is_initialized():
+                if hasattr(LLMEngine, 'shutdown'):
+                    LLMEngine.shutdown()
+                torch.distributed.destroy_process_group()
+                torch.cuda.empty_cache()
+            raise
         for idx, val in enumerate(outputs):
             answer = val.outputs[0].text.strip()
             if (len(answer) > 0) and is_correct(answer):
@@ -243,8 +283,20 @@ def main():
                 fp.write(json.dumps(new_sample, ensure_ascii=False) + '\n')
                 del new_sample
                 n_success += 1
+    input_lengths.sort()
+    info_msg = (f'Lengths of input sequences: minimal = {input_lengths[0]}, maximal = {input_lengths[-1]}, '
+                f'median = {input_lengths[(len(input_lengths) - 1) // 2]}, '
+                f'mean = {round(sum(input_lengths) / len(input_lengths))}.')
+    text_generation_logger.info(info_msg)
     info_msg = f'{n_success} answers from {len(input_instructions)} are successfully generated.'
     text_generation_logger.info(info_msg)
+    is_distributed_initialized = torch.distributed.is_initialized()
+    text_generation_logger.info(f'torch.distributed.is_initialized() = {is_distributed_initialized}')
+    if is_distributed_initialized:
+        if hasattr(LLMEngine, 'shutdown'):
+            LLMEngine.shutdown()
+        torch.distributed.destroy_process_group()
+        torch.cuda.empty_cache()
 
 
 if __name__ == '__main__':
