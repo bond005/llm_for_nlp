@@ -42,7 +42,7 @@ def handle_exit(signal, frame):
         if hasattr(LLMEngine, 'shutdown'):
             LLMEngine.shutdown()
         torch.distributed.destroy_process_group()
-        torch.cuda_empty_cache()
+        torch.cuda.empty_cache()
     sys.exit(0)
 
 
