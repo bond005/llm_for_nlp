@@ -176,11 +176,11 @@ def main():
         model = AutoModelForCausalLM.from_pretrained(
             args.llm_name,
             torch_dtype=torch.bfloat16,
-            attn_implementation='flash_attention_2',
+            attn_implementation='sdpa',
             device_map='cuda:0'
         )
     except:
-        text_generation_logger.warning('The Flash Attention 2 is not used.')
+        text_generation_logger.warning('The Scaled-Dot Product Attention is not used.')
         try:
             model = AutoModelForCausalLM.from_pretrained(
                 args.llm_name,
