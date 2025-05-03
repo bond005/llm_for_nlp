@@ -262,29 +262,29 @@ def main():
                 del outputs
                 del batch_of_texts
                 batch_of_texts = []
-    if len(batch_of_texts) > 0:
-        try:
-            outputs = model.generate([it['input'] for it in batch_of_texts], sampling_params)
-        except BaseException as err:
-            text_generation_logger.error(str(err))
-            if torch.distributed.is_initialized():
-                if hasattr(LLMEngine, 'shutdown'):
-                    LLMEngine.shutdown()
-                torch.distributed.destroy_process_group()
-                torch.cuda.empty_cache()
-            raise
-        for idx, val in enumerate(outputs):
-            answer = val.outputs[0].text.strip()
-            if (len(answer) > 0) and is_correct(answer):
-                new_sample = {
-                    'system': batch_of_texts[idx]['system'],
-                    'query': batch_of_texts[idx]['query'],
-                    'response': answer,
-                    'history': batch_of_texts[idx]['history']
-                }
-                fp.write(json.dumps(new_sample, ensure_ascii=False) + '\n')
-                del new_sample
-                n_success += 1
+        if len(batch_of_texts) > 0:
+            try:
+                outputs = model.generate([it['input'] for it in batch_of_texts], sampling_params)
+            except BaseException as err:
+                text_generation_logger.error(str(err))
+                if torch.distributed.is_initialized():
+                    if hasattr(LLMEngine, 'shutdown'):
+                        LLMEngine.shutdown()
+                    torch.distributed.destroy_process_group()
+                    torch.cuda.empty_cache()
+                raise
+            for idx, val in enumerate(outputs):
+                answer = val.outputs[0].text.strip()
+                if (len(answer) > 0) and is_correct(answer):
+                    new_sample = {
+                        'system': batch_of_texts[idx]['system'],
+                        'query': batch_of_texts[idx]['query'],
+                        'response': answer,
+                        'history': batch_of_texts[idx]['history']
+                    }
+                    fp.write(json.dumps(new_sample, ensure_ascii=False) + '\n')
+                    del new_sample
+                    n_success += 1
     input_lengths.sort()
     info_msg = (f'Lengths of input sequences: minimal = {input_lengths[0]}, maximal = {input_lengths[-1]}, '
                 f'median = {input_lengths[(len(input_lengths) - 1) // 2]}, '
