@@ -45,18 +45,15 @@ def main():
                         help='The maximal length of input query.')
     parser.add_argument('--max_out_len', dest='max_output_len', type=int, required=True,
                         help='The maximal length of generated answer.')
-    parser.add_argument('--minibatch', dest='minibatch', type=int, required=False,
-                        default=None, help='The mini-batch size.')
+    parser.add_argument('--num_seqs', dest='num_seqs', type=int, required=False,
+                        default=256, help='The maximum number of sequences that the vllm library can parallelize.')
     args = parser.parse_args()
 
-    if args.minibatch is None:
-        minibatch_size = 1
-    else:
-        minibatch_size = args.minibatch
-        if minibatch_size < 1:
-            err_msg = f'The mini-batch is too small! Expected a positive integer, got {args.minibatch}.'
-            relation_extraction_logger.error(err_msg)
-            raise ValueError(err_msg)
+    max_num_seqs = args.num_seqs
+    if max_num_seqs < 1:
+        err_msg = f'The maximum number of sequences is too small! Expected a positive integer, got {args.num_seqs}.'
+        relation_extraction_logger.error(err_msg)
+        raise ValueError(err_msg)
 
     output_fname = os.path.normpath(args.output_file)
     if os.path.isdir(output_fname):
@@ -108,7 +105,12 @@ def main():
     sampling_params = SamplingParams(temperature=0.0, top_p=0.95, top_k=100, max_tokens=args.max_output_len)
     max_model_len = args.max_output_len + args.max_input_len
     try:
-        model = LLM(model=args.llm_name, gpu_memory_utilization=0.95, max_model_len=max_model_len)
+        model = LLM(
+            model=args.llm_name,
+            gpu_memory_utilization=0.95,
+            max_model_len=max_model_len,
+            max_num_seqs=max_num_seqs
+        )
     except Exception as err:
         relation_extraction_logger.error(str(err))
         raise
