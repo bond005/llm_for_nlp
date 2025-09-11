@@ -131,7 +131,7 @@ def main():
         if len(entities_dict) > 0:
             relations_dict = dict()
             entities_list = sorted(list(entities_dict.keys()))
-            messages = []
+            input_texts = []
             for first_entity in entities_list:
                 for second_entity in entities_list:
                     if first_entity != second_entity:
@@ -140,15 +140,20 @@ def main():
                             second_normalized_entity=second_entity,
                             source_text=full_text
                         )
-                        messages.append([
-                            {'role': 'system', 'content': system_prompt},
-                            {'role': 'user', 'content': user_prompt}
-                        ])
-                        del user_prompt
-            outputs = model.chat(messages, sampling_params, chat_template_kwargs={"enable_thinking": False},
-                                 use_tqdm=False)
-            assert len(outputs) == len(messages)
-            del messages
+                        new_instruction = tokenizer.apply_chat_template(
+                            [
+                                {'role': 'system', 'content': system_prompt},
+                                {'role': 'user', 'content': user_prompt}
+                            ],
+                            tokenize=False,
+                            add_generation_prompt=True,
+                            enable_thinking=False
+                        )
+                        input_texts.append(new_instruction)
+                        del user_prompt, new_instruction
+            outputs = model.generate(input_texts, sampling_params, use_tqdm=False)
+            assert len(outputs) == len(input_texts)
+            del input_texts
             output_idx = 0
             for first_entity in entities_list:
                 for second_entity in entities_list:
