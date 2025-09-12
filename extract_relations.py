@@ -2,8 +2,9 @@ from argparse import ArgumentParser
 import codecs
 import json
 import logging
-import random
 import os
+import random
+import signal
 import sys
 
 logging.getLogger('vllm').setLevel(logging.WARNING)
@@ -17,10 +18,19 @@ import numpy as np
 import torch
 from tqdm import trange
 from transformers import AutoTokenizer
-from vllm import LLM, SamplingParams
+from vllm import LLM, SamplingParams, LLMEngine
 
 relation_extraction_logger = logging.getLogger(__name__)
 RANDOM_SEED: int = 42
+
+
+def handle_exit(signal, frame):
+    if torch.distributed.is_initialized():
+        if hasattr(LLMEngine, 'shutdown'):
+            LLMEngine.shutdown()
+        torch.distributed.destroy_process_group()
+        torch.cuda.empty_cache()
+    sys.exit(0)
 
 
 def main():
@@ -33,6 +43,9 @@ def main():
         relation_extraction_logger.error(err_msg)
         raise ValueError(err_msg)
     torch.cuda.manual_seed(RANDOM_SEED)
+
+    signal.signal(signal.SIGINT, handle_exit)
+    signal.signal(signal.SIGTERM, handle_exit)
 
     parser = ArgumentParser()
     parser.add_argument('-m', '--model', dest='llm_name', type=str, required=True,
@@ -92,7 +105,7 @@ def main():
         err_msg = f'The file "{input_fname}" contains a wrong knowledge.'
         relation_extraction_logger.error(err_msg)
         raise IOError(err_msg)
-    if not all(map(lambda it: 'normalized_entities' in it['parsed'], knowledge_samples)):
+    if not any(map(lambda it: 'normalized_entities' in it['parsed'], knowledge_samples)):
         err_msg = f'The file "{input_fname}" contains a wrong knowledge.'
         relation_extraction_logger.error(err_msg)
         raise IOError(err_msg)
@@ -162,10 +175,12 @@ def main():
                     if first_entity != second_entity:
                         relation_description = ' '.join(outputs[output_idx].outputs[0].text.strip().split()).strip()
                         output_idx += 1
-                        tokens_of_description = list(
-                            filter(lambda tok: tok.isalpha(), wordpunct_tokenize(relation_description.lower())))
+                        tokens_of_description = list(filter(
+                            lambda tok: tok.isalpha(),
+                            wordpunct_tokenize(relation_description.lower())
+                        ))
                         if len(tokens_of_description) > 0:
-                            if (' '.join(tokens_of_description) != 'нет') and (' '.join(tokens_of_description) != 'no'):
+                            if ' '.join(tokens_of_description) not in {'нет', 'no'}:
                                 if first_entity not in relations_dict:
                                     relations_dict[first_entity] = dict()
                                 if second_entity not in relations_dict[first_entity]:
