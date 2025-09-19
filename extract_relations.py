@@ -2,8 +2,9 @@ from argparse import ArgumentParser
 import codecs
 import json
 import logging
-import os
+import math
 import random
+import os
 import signal
 import sys
 
@@ -22,6 +23,7 @@ from vllm import LLM, SamplingParams, LLMEngine
 
 relation_extraction_logger = logging.getLogger(__name__)
 RANDOM_SEED: int = 42
+PROBABILITY_THRESHOLD: float = 0.77
 
 
 def handle_exit(signal, frame):
@@ -115,7 +117,8 @@ def main():
     except Exception as err:
         relation_extraction_logger.error(str(err))
         raise
-    sampling_params = SamplingParams(temperature=0.0, top_p=0.95, top_k=100, max_tokens=args.max_output_len)
+    sampling_params = SamplingParams(temperature=0.0, top_p=0.95, top_k=100,
+                                     max_tokens=args.max_output_len, logprobs=5)
     max_model_len = args.max_output_len + args.max_input_len
     try:
         model = LLM(
@@ -136,9 +139,19 @@ def main():
                                       'Первая именованная сущность: {first_normalized_entity}\n\n'
                                       'Вторая именованная сущность: {second_normalized_entity}\n\n'
                                       'Текст: {source_text}\n\nСмысл отношения между двумя именованными сущностями: ')
+    prompt_for_relation_keywords = ('Внимательно изучите следующий текст.\n\n```text\n{full_text}\n```\n\n'
+                                    'В данном тексте между двумя именованными сущностями `{first_entity}` и '
+                                    '`{second_entity}` установлено отношение, описываемое как:\n\n'
+                                    '```text\n{relation_description}\n```\n\nВыпишите, пожалуйста, одно или несколько '
+                                    'ключевых слов, которые кратко описывают общую природу, концепцию или тему этого '
+                                    'отношения между двумя именованными сущностями `{first_entity}` и '
+                                    '`{second_entity}` (если таких ключевых слов больше одного, то они должны быть '
+                                    'разделены запятой).\n\nКлючевые слова: ')
 
     for sample_idx in trange(len(knowledge_samples)):
         full_text = knowledge_samples[sample_idx]['content']
+        if 'relations' in knowledge_samples[sample_idx]['parsed']:
+            del knowledge_samples[sample_idx]['parsed']['relations']
         if 'normalized_entities' in knowledge_samples[sample_idx]['parsed']:
             entities_dict = knowledge_samples[sample_idx]['parsed']['normalized_entities']
         else:
@@ -146,47 +159,104 @@ def main():
         if len(entities_dict) > 0:
             relations_dict = dict()
             entities_list = sorted(list(entities_dict.keys()))
-            input_texts = []
+            messages = []
             for first_entity in entities_list:
+                first_entity_ = ' '.join(first_entity.split()).strip()
                 for second_entity in entities_list:
-                    if first_entity != second_entity:
+                    second_entity_ = ' '.join(second_entity.split()).strip()
+                    if first_entity_.lower() != second_entity_.lower():
                         user_prompt = prompt_for_relation_extraction.format(
-                            first_normalized_entity=first_entity,
-                            second_normalized_entity=second_entity,
+                            first_normalized_entity=first_entity_,
+                            second_normalized_entity=second_entity_,
                             source_text=full_text
                         )
-                        new_instruction = tokenizer.apply_chat_template(
+                        messages.append(tokenizer.apply_chat_template(
                             [
                                 {'role': 'system', 'content': system_prompt},
                                 {'role': 'user', 'content': user_prompt}
                             ],
                             tokenize=False,
-                            add_generation_prompt=True,
-                            enable_thinking=False
-                        )
-                        input_texts.append(new_instruction)
-                        del user_prompt, new_instruction
-            outputs = model.generate(input_texts, sampling_params, use_tqdm=False)
-            assert len(outputs) == len(input_texts)
-            del input_texts
+                            add_generation_prompt=True
+                        ))
+                        del user_prompt
+            outputs = model.generate(messages, sampling_params, use_tqdm=False)
+            assert len(outputs) == len(messages)
+            del messages
             output_idx = 0
             for first_entity in entities_list:
+                first_entity_ = ' '.join(first_entity.split()).strip()
                 for second_entity in entities_list:
-                    if first_entity != second_entity:
+                    second_entity_ = ' '.join(second_entity.split()).strip()
+                    if first_entity_.lower() != second_entity_.lower():
                         relation_description = ' '.join(outputs[output_idx].outputs[0].text.strip().split()).strip()
+                        relation_logprob = 0.0
+                        num_tokens = 0
+                        for logprob_dict in outputs[output_idx].outputs[0].logprobs:
+                            token_id = list(logprob_dict.keys())[0]
+                            relation_logprob += float(logprob_dict[token_id].logprob)
+                            num_tokens += 1
+                        relation_logprob /= num_tokens
+                        relation_prob = math.exp(relation_logprob)
                         output_idx += 1
                         tokens_of_description = list(filter(
                             lambda tok: tok.isalpha(),
                             wordpunct_tokenize(relation_description.lower())
                         ))
-                        if len(tokens_of_description) > 0:
-                            if ' '.join(tokens_of_description) not in {'нет', 'no'}:
+                        if (len(tokens_of_description) > 0) and (relation_prob >= PROBABILITY_THRESHOLD):
+                            filtered_description = ' '.join(tokens_of_description)
+                            is_correct_relation = ((filtered_description != 'нет') and
+                                                   (filtered_description != 'no') and
+                                                   (filtered_description.find(' не содержит') < 0) and
+                                                   (filtered_description.find('нет отношен') < 0) and
+                                                   (filtered_description.find('no relation') < 0) and
+                                                   (filtered_description.find('нет связ') < 0))
+                            if is_correct_relation:
                                 if first_entity not in relations_dict:
                                     relations_dict[first_entity] = dict()
                                 if second_entity not in relations_dict[first_entity]:
-                                    relations_dict[first_entity][second_entity] = relation_description
+                                    relations_dict[first_entity][second_entity] = {
+                                        'description': relation_description,
+                                        'probability': relation_prob
+                                    }
             if len(relations_dict) > 0:
-                knowledge_samples[sample_idx]['parsed']['relations'] = relations_dict
+                messages = []
+                for first_entity in sorted(list(relations_dict.keys())):
+                    for second_entity in sorted(list(relations_dict[first_entity].keys())):
+                        user_prompt = prompt_for_relation_keywords.format(
+                            full_text=full_text,
+                            first_entity=first_entity,
+                            second_entity=second_entity,
+                            relation_description=relations_dict[first_entity][second_entity]['description']
+                        )
+                        messages.append(tokenizer.apply_chat_template(
+                            [
+                                {'role': 'system', 'content': system_prompt},
+                                {'role': 'user', 'content': user_prompt}
+                            ],
+                            tokenize=False,
+                            add_generation_prompt=True
+                        ))
+                        del user_prompt
+                outputs = model.generate(messages, sampling_params, use_tqdm=False)
+                assert len(outputs) == len(messages)
+                del messages
+                output_idx = 0
+                for first_entity in sorted(list(relations_dict.keys())):
+                    for second_entity in sorted(list(relations_dict[first_entity].keys())):
+                        relation_keywords = ' '.join(outputs[output_idx].outputs[0].text.strip().split()).strip()
+                        output_idx += 1
+                        keyword_tokens = list(filter(
+                            lambda tok: tok.isalpha(),
+                            wordpunct_tokenize(relation_keywords.lower())
+                        ))
+                        if len(keyword_tokens) > 0:
+                            relations_dict[first_entity][second_entity]['keywords'] = relation_keywords
+                        else:
+                            del relations_dict[first_entity][second_entity]
+                    if len(relations_dict[first_entity]) == 0:
+                        del relations_dict[first_entity]
+                if len(relations_dict) > 0:
+                    knowledge_samples[sample_idx]['parsed']['relations'] = relations_dict
             del relations_dict, entities_list
         del entities_dict
 
