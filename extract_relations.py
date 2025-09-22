@@ -23,7 +23,7 @@ from vllm import LLM, SamplingParams, LLMEngine
 
 relation_extraction_logger = logging.getLogger(__name__)
 RANDOM_SEED: int = 42
-PROBABILITY_THRESHOLD: float = 0.77
+PROBABILITY_THRESHOLD: float = 0.67
 
 
 def handle_exit(signal, frame):
@@ -56,6 +56,9 @@ def main():
                         help='The input JSON file name with parsed knowledge database without relations.')
     parser.add_argument('-o', '--output', dest='output_file', type=str, required=True,
                         help='The input JSON file name with parsed knowledge database with extracted relations.')
+    parser.add_argument('--exclude', dest='excluded_entity_class', type=str, required=False,
+                        action='append', default=['ORDINAL', 'CARDINAL', 'CITY', 'COUNTRY'],
+                        help='The excluded named entity class.')
     parser.add_argument('--max_in_len', dest='max_input_len', type=int, required=True,
                         help='The maximal length of input query.')
     parser.add_argument('--max_out_len', dest='max_output_len', type=int, required=True,
@@ -63,6 +66,12 @@ def main():
     parser.add_argument('--num_seqs', dest='num_seqs', type=int, required=False,
                         default=256, help='The maximum number of sequences that the vllm library can parallelize.')
     args = parser.parse_args()
+
+    excluded_classes_of_named_entities = set()
+    for entity_cls in args.excluded_entity_class:
+        prep_entity_cls = ' '.join(entity_cls.lower().strip().split()).strip()
+        if len(prep_entity_cls) > 0:
+            excluded_classes_of_named_entities.add(prep_entity_cls)
 
     max_num_seqs = args.num_seqs
     if max_num_seqs < 1:
@@ -133,6 +142,118 @@ def main():
     relation_extraction_logger.info(f'The specialized LLM for relation extraction is loaded from "{args.llm_name}".')
 
     system_prompt = 'Вы - эксперт в области анализа текстов и извлечения семантической информации из них.'
+
+    prompt_for_entity_linking = ('Выполните нормализацию именованной сущности, встретившейся в тексте.\n\n'
+                                 'Исходная (ненормализованная) именованная сущность: {source_entity}\n\n'
+                                 'Текст: {source_text}\n\nНормализованная именованная сущность: ')
+    prompt_for_entity_description = ('Напишите, что означает именованная сущность в тексте, то есть раскройте '
+                                     'её смысл относительно текста.\n\nИменованная сущность: {normalized_entity}\n\n'
+                                     'Текст: {source_text}\n\nСмысл именованной сущности: ')
+    relation_extraction_logger.info('Entity linking and description process is started.')
+    for sample_idx in trange(len(knowledge_samples)):
+        full_text = knowledge_samples[sample_idx]['content']
+        if 'normalized_entities' in knowledge_samples[sample_idx]['parsed']:
+            del knowledge_samples[sample_idx]['parsed']['normalized_entities']
+        if 'source_entities' not in knowledge_samples[sample_idx]['parsed']:
+            continue
+        all_entity_classes = sorted(list(filter(
+            lambda it: ' '.join(it.lower().strip().split()).strip() not in excluded_classes_of_named_entities,
+            knowledge_samples[sample_idx]['parsed']['source_entities'].keys()
+        )))
+        messages_for_linking = []
+        for entity_class in all_entity_classes:
+            for entity_text in knowledge_samples[sample_idx]['parsed']['source_entities'][entity_class]:
+                user_prompt = prompt_for_entity_linking.format(source_text=full_text, source_entity=entity_text)
+                messages_for_linking.append(tokenizer.apply_chat_template(
+                    [
+                        {'role': 'system', 'content': system_prompt},
+                        {'role': 'user', 'content': user_prompt}
+                    ],
+                    tokenize=False,
+                    add_generation_prompt=True
+                ))
+                del user_prompt
+        outputs = model.generate(messages_for_linking, sampling_params, use_tqdm=False)
+        assert len(outputs) == len(messages_for_linking)
+        del messages_for_linking
+        output_idx = 0
+        normalized_entities_dict = dict()
+        for entity_class in all_entity_classes:
+            for _ in knowledge_samples[sample_idx]['parsed']['source_entities'][entity_class]:
+                normalized_entity = ' '.join(outputs[output_idx].outputs[0].text.strip().split()).strip()
+                entity_logprob = 0.0
+                num_tokens = 0
+                for logprob_dict in outputs[output_idx].outputs[0].logprobs:
+                    token_id = list(logprob_dict.keys())[0]
+                    entity_logprob += float(logprob_dict[token_id].logprob)
+                    num_tokens += 1
+                entity_logprob /= num_tokens
+                entity_proba = math.exp(entity_logprob)
+                output_idx += 1
+                tokens_of_entity = list(filter(
+                    lambda tok: tok.isalpha(),
+                    wordpunct_tokenize(normalized_entity.lower())
+                ))
+                if (len(tokens_of_entity) > 0) and (entity_proba >= PROBABILITY_THRESHOLD):
+                    if normalized_entity in normalized_entities_dict:
+                        if entity_proba > normalized_entities_dict[normalized_entity]['probability']:
+                            normalized_entities_dict[normalized_entity] = {
+                                'type': entity_class,
+                                'probability': entity_proba
+                            }
+                    else:
+                        normalized_entities_dict[normalized_entity] = {
+                            'type': entity_class,
+                            'probability': entity_proba
+                        }
+        del outputs
+        if len(normalized_entities_dict) > 0:
+            messages_for_description = []
+            entities_list = sorted(normalized_entities_dict.keys())
+            for normalized_entity in entities_list:
+                user_prompt = prompt_for_entity_description.format(
+                    normalized_entity=normalized_entity,
+                    source_text=full_text
+                )
+                messages_for_description.append(tokenizer.apply_chat_template(
+                    [
+                        {'role': 'system', 'content': system_prompt},
+                        {'role': 'user', 'content': user_prompt}
+                    ],
+                    tokenize=False,
+                    add_generation_prompt=True
+                ))
+                del user_prompt
+            outputs = model.generate(messages_for_description, sampling_params, use_tqdm=False)
+            assert len(outputs) == len(messages_for_description)
+            del messages_for_description
+            output_idx = 0
+            for normalized_entity in entities_list:
+                entity_description = ' '.join(outputs[output_idx].outputs[0].text.strip().split()).strip()
+                entity_logprob = 0.0
+                num_tokens = 0
+                for logprob_dict in outputs[output_idx].outputs[0].logprobs:
+                    token_id = list(logprob_dict.keys())[0]
+                    entity_logprob += float(logprob_dict[token_id].logprob)
+                    num_tokens += 1
+                entity_logprob /= num_tokens
+                entity_proba = math.exp(entity_logprob)
+                output_idx += 1
+                tokens_of_description = list(filter(
+                    lambda tok: tok.isalpha(),
+                    wordpunct_tokenize(entity_description.lower())
+                ))
+                if (len(tokens_of_description) > 0) and (entity_proba >= PROBABILITY_THRESHOLD):
+                    normalized_entities_dict[normalized_entity]['description'] = entity_description
+                    normalized_entities_dict[normalized_entity]['probability'] = entity_proba
+                else:
+                    del normalized_entities_dict[normalized_entity]
+            if len(normalized_entities_dict) > 0:
+                knowledge_samples[sample_idx]['parsed']['normalized_entities'] = normalized_entities_dict
+        del normalized_entities_dict
+    relation_extraction_logger.info('Entity linking and description process is successfully finished.')
+
+    relation_extraction_logger.info('Relation extraction process is started.')
     prompt_for_relation_extraction = ('Напишите, что означает отношение между двумя именованными сущностями в тексте, '
                                       'то есть раскройте смысл этого отношения относительно текста (либо напишите '
                                       'прочерк, если между двумя именованными сущностями отсутствует отношение).\n\n'
@@ -147,7 +268,6 @@ def main():
                                     'отношения между двумя именованными сущностями `{first_entity}` и '
                                     '`{second_entity}` (если таких ключевых слов больше одного, то они должны быть '
                                     'разделены запятой).\n\nКлючевые слова: ')
-
     for sample_idx in trange(len(knowledge_samples)):
         full_text = knowledge_samples[sample_idx]['content']
         if 'relations' in knowledge_samples[sample_idx]['parsed']:
@@ -259,6 +379,7 @@ def main():
                     knowledge_samples[sample_idx]['parsed']['relations'] = relations_dict
             del relations_dict, entities_list
         del entities_dict
+    relation_extraction_logger.info('Relation extraction process is successfully finished.')
 
     with codecs.open(output_fname, mode='w', encoding='utf-8') as fp:
         json.dump(fp=fp, obj=knowledge_samples, ensure_ascii=False, indent=4)
